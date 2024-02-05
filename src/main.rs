@@ -18,11 +18,15 @@ pub struct VegatationCellState {
     coords: IVec2,
 }
 
+const RANDOM_FIRE_OCCURRENCE: f64 = 0.001;
+const RANDOM_REGROWTH_OCCURRENCE: f64 = 0.01;
+
 impl CellState for VegatationCellState {
     fn new_cell_state<'a>(&self, neighbor_cells: impl Iterator<Item = &'a Self>) -> Self {
         let burning_cell_count = neighbor_cells
             .filter(|&c| c.state == VegetationState::Burning)
             .count();
+
         match self.state {
             VegetationState::Green => {
                 if burning_cell_count > 0 {
@@ -31,8 +35,13 @@ impl CellState for VegatationCellState {
                         coords: self.coords,
                     }
                 } else {
+                    let random_fire_occurs = rand::thread_rng().gen_bool(RANDOM_FIRE_OCCURRENCE);
                     VegatationCellState {
-                        state: VegetationState::Green,
+                        state: if random_fire_occurs {
+                            VegetationState::Burning
+                        } else {
+                            VegetationState::Green
+                        },
                         coords: self.coords,
                     }
                 }
@@ -41,10 +50,19 @@ impl CellState for VegatationCellState {
                 state: VegetationState::Empty,
                 coords: self.coords,
             },
-            VegetationState::Empty => VegatationCellState {
-                state: VegetationState::Empty,
-                coords: self.coords,
-            },
+            VegetationState::Empty => {
+                let random_regrowth_occurs =
+                    rand::thread_rng().gen_bool(RANDOM_REGROWTH_OCCURRENCE);
+
+                VegatationCellState {
+                    state: if random_regrowth_occurs {
+                        VegetationState::Green
+                    } else {
+                        VegetationState::Empty
+                    },
+                    coords: self.coords,
+                }
+            }
         }
     }
 
@@ -68,8 +86,8 @@ fn setup_map(mut commands: Commands) {
     let commands = &mut commands;
 
     let mut rng = rand::thread_rng();
-    let (size_x, size_y) = (6000, 8000);
-    let sprite_size = 0.2;
+    let (size_x, size_y) = (600, 800);
+    let sprite_size = 2.0;
     let color = Color::rgba(0., 0., 0., 0.);
 
     commands
@@ -85,10 +103,10 @@ fn setup_map(mut commands: Commands) {
                         true => VegetationState::Green,
                         false => VegetationState::Empty,
                     };
-                    let state = match (rng.gen_bool(0.01), state) {
-                        (true, VegetationState::Green) => VegetationState::Burning,
-                        _ => state,
-                    };
+                    // let state = match (rng.gen_bool(0.01), state) {
+                    //     (true, VegetationState::Green) => VegetationState::Burning,
+                    //     _ => state,
+                    // };
 
                     let cell = VegatationCellState {
                         state: state,
