@@ -1,9 +1,21 @@
 use bevy::prelude::*;
-// use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use bevy_life::{
     CellState, CellularAutomatonPlugin, MooreCell2d, SimulationBatch, SimulationPause,
 };
 use rand::Rng;
+
+use bevy_inspector_egui::prelude::*;
+use bevy_inspector_egui::quick::ResourceInspectorPlugin;
+
+// `InspectorOptions` are completely optional
+#[derive(Reflect, Resource, Default, InspectorOptions)]
+#[reflect(Resource, InspectorOptions)]
+struct Configuration {
+    #[inspector(min = 0.0, max = 1.0)]
+    fire_probability: f32,
+    #[inspector(min = 0.0, max = 1.0)]
+    regrowth_probability: f32,
+}
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Component, Reflect)]
 enum VegetationState {
@@ -13,7 +25,7 @@ enum VegetationState {
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Component, Reflect)]
-pub struct VegatationCellState {
+pub struct FFMCellState {
     state: VegetationState,
     coords: IVec2,
 }
@@ -21,7 +33,7 @@ pub struct VegatationCellState {
 const RANDOM_FIRE_OCCURRENCE: f64 = 0.001;
 const RANDOM_REGROWTH_OCCURRENCE: f64 = 0.01;
 
-impl CellState for VegatationCellState {
+impl CellState for FFMCellState {
     fn new_cell_state<'a>(&self, neighbor_cells: impl Iterator<Item = &'a Self>) -> Self {
         let burning_cell_count = neighbor_cells
             .filter(|&c| c.state == VegetationState::Burning)
@@ -30,13 +42,13 @@ impl CellState for VegatationCellState {
         match self.state {
             VegetationState::Green => {
                 if burning_cell_count > 0 {
-                    VegatationCellState {
+                    FFMCellState {
                         state: VegetationState::Burning,
                         coords: self.coords,
                     }
                 } else {
                     let random_fire_occurs = rand::thread_rng().gen_bool(RANDOM_FIRE_OCCURRENCE);
-                    VegatationCellState {
+                    FFMCellState {
                         state: if random_fire_occurs {
                             VegetationState::Burning
                         } else {
@@ -46,7 +58,7 @@ impl CellState for VegatationCellState {
                     }
                 }
             }
-            VegetationState::Burning => VegatationCellState {
+            VegetationState::Burning => FFMCellState {
                 state: VegetationState::Empty,
                 coords: self.coords,
             },
@@ -54,7 +66,7 @@ impl CellState for VegatationCellState {
                 let random_regrowth_occurs =
                     rand::thread_rng().gen_bool(RANDOM_REGROWTH_OCCURRENCE);
 
-                VegatationCellState {
+                FFMCellState {
                     state: if random_regrowth_occurs {
                         VegetationState::Green
                     } else {
@@ -75,7 +87,7 @@ impl CellState for VegatationCellState {
     }
 }
 
-pub type VegetationAutomataPlugin = CellularAutomatonPlugin<MooreCell2d, VegatationCellState>;
+pub type VegetationAutomataPlugin = CellularAutomatonPlugin<MooreCell2d, FFMCellState>;
 
 fn setup_camera(mut commands: Commands) {
     // Camera
@@ -108,7 +120,7 @@ fn setup_map(mut commands: Commands) {
                     //     _ => state,
                     // };
 
-                    let cell = VegatationCellState {
+                    let cell = FFMCellState {
                         state: state,
                         coords: IVec2::new(x, y),
                     };
@@ -153,7 +165,7 @@ fn toggle_simulation_pause_system(
 
 fn main() {
     App::new()
-        .register_type::<VegatationCellState>()
+        .register_type::<FFMCellState>()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "Game Of Life".to_string(),
@@ -163,7 +175,9 @@ fn main() {
             ..default()
         }))
         .add_plugins(VegetationAutomataPlugin::default())
-        // .add_plugins(WorldInspectorPlugin::new())
+        .init_resource::<Configuration>() // `ResourceInspectorPlugin` won't initialize the resource
+        .register_type::<Configuration>() // you need to register your type to display it
+        .add_plugins(ResourceInspectorPlugin::<Configuration>::default())
         .insert_resource(SimulationBatch)
         .add_systems(Startup, (setup_camera, setup_map))
         .add_systems(Update, (toggle_simulation_pause_system,))
