@@ -1,21 +1,12 @@
 use bevy::prelude::*;
-use bevy_life::{
-    CellState, CellularAutomatonPlugin, MooreCell2d, SimulationBatch, SimulationPause,
-};
+use bevy_ecs_tilemap::helpers::square_grid::neighbors::Neighbors;
+use bevy_ecs_tilemap::prelude::*;
+use bevy_ecs_tilemap::tiles::{TilePos, TileStorage, TileVisible};
+
+use bevy::input::mouse::MouseMotion;
+use bevy::{input::Input, math::Vec3, render::camera::Camera};
+
 use rand::Rng;
-
-use bevy_inspector_egui::prelude::*;
-use bevy_inspector_egui::quick::ResourceInspectorPlugin;
-
-// `InspectorOptions` are completely optional
-#[derive(Reflect, Resource, Default, InspectorOptions)]
-#[reflect(Resource, InspectorOptions)]
-struct Configuration {
-    #[inspector(min = 0.0, max = 1.0)]
-    fire_probability: f32,
-    #[inspector(min = 0.0, max = 1.0)]
-    regrowth_probability: f32,
-}
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Component, Reflect)]
 enum VegetationState {
@@ -27,159 +18,228 @@ enum VegetationState {
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Component, Reflect)]
 pub struct FFMCellState {
     state: VegetationState,
-    coords: IVec2,
 }
 
-const RANDOM_FIRE_OCCURRENCE: f64 = 0.001;
-const RANDOM_REGROWTH_OCCURRENCE: f64 = 0.01;
+#[derive(Component)]
+pub struct LastUpdate(f64);
 
-impl CellState for FFMCellState {
-    fn new_cell_state<'a>(&self, neighbor_cells: impl Iterator<Item = &'a Self>) -> Self {
-        let burning_cell_count = neighbor_cells
-            .filter(|&c| c.state == VegetationState::Burning)
-            .count();
-
-        match self.state {
-            VegetationState::Green => {
-                if burning_cell_count > 0 {
-                    FFMCellState {
-                        state: VegetationState::Burning,
-                        coords: self.coords,
-                    }
-                } else {
-                    let random_fire_occurs = rand::thread_rng().gen_bool(RANDOM_FIRE_OCCURRENCE);
-                    FFMCellState {
-                        state: if random_fire_occurs {
-                            VegetationState::Burning
-                        } else {
-                            VegetationState::Green
-                        },
-                        coords: self.coords,
-                    }
-                }
-            }
-            VegetationState::Burning => FFMCellState {
-                state: VegetationState::Empty,
-                coords: self.coords,
-            },
-            VegetationState::Empty => {
-                let random_regrowth_occurs =
-                    rand::thread_rng().gen_bool(RANDOM_REGROWTH_OCCURRENCE);
-
-                FFMCellState {
-                    state: if random_regrowth_occurs {
-                        VegetationState::Green
-                    } else {
-                        VegetationState::Empty
-                    },
-                    coords: self.coords,
-                }
-            }
-        }
-    }
-
-    fn color(&self) -> Option<Color> {
-        match self.state {
-            VegetationState::Green => Some(Color::rgb(0., 1., 0.)),
-            VegetationState::Burning => Some(Color::rgb(1., 0., 0.)),
-            VegetationState::Empty => None,
-        }
-    }
-}
-
-pub type VegetationAutomataPlugin = CellularAutomatonPlugin<MooreCell2d, FFMCellState>;
-
-fn setup_camera(mut commands: Commands) {
-    // Camera
-    commands.spawn(Camera2dBundle::default());
-}
-
-fn setup_map(mut commands: Commands) {
-    let commands = &mut commands;
-
-    let mut rng = rand::thread_rng();
-    let (size_x, size_y) = (600, 800);
-    let sprite_size = 2.0;
-    let color = Color::rgba(0., 0., 0., 0.);
-
-    commands
-        .spawn(SpatialBundle::from_transform(Transform::from_xyz(
-            -(size_x as f32 * sprite_size) / 2.,
-            -(size_y as f32 * sprite_size) / 2.,
-            0.,
-        )))
-        .with_children(|builder| {
-            for y in 0..=size_y {
-                for x in 0..=size_x {
-                    let state = match rng.gen_bool(0.3) {
-                        true => VegetationState::Green,
-                        false => VegetationState::Empty,
-                    };
-                    // let state = match (rng.gen_bool(0.01), state) {
-                    //     (true, VegetationState::Green) => VegetationState::Burning,
-                    //     _ => state,
-                    // };
-
-                    let cell = FFMCellState {
-                        state: state,
-                        coords: IVec2::new(x, y),
-                    };
-                    builder.spawn((
-                        SpriteBundle {
-                            sprite: Sprite {
-                                custom_size: Some(Vec2::splat(sprite_size)),
-                                color,
-                                ..default()
-                            },
-                            transform: Transform::from_xyz(
-                                sprite_size * x as f32,
-                                sprite_size * y as f32,
-                                0.,
-                            ),
-                            ..default()
-                        },
-                        MooreCell2d::new(IVec2::new(x, y)),
-                        cell,
-                    ));
-                }
-            }
-        });
-    println!("map generated");
-}
-
-fn toggle_simulation_pause_system(
+// A simple camera system for moving and zooming the camera.
+#[allow(dead_code)]
+pub fn movement(
+    time: Res<Time>,
     keyboard_input: Res<Input<KeyCode>>,
-    mut commands: Commands,
-    simulation_pause_query: Option<Res<SimulationPause>>,
+    mut query: Query<(&mut Transform, &mut OrthographicProjection), With<Camera>>,
 ) {
-    if keyboard_input.just_pressed(KeyCode::Space) {
-        if simulation_pause_query.is_some() {
-            // If the SimulationPause resource exists, remove it to resume the simulation
-            commands.remove_resource::<SimulationPause>();
-        } else {
-            // If the SimulationPause resource does not exist, add it to pause the simulation
-            commands.insert_resource(SimulationPause);
+    for (mut transform, mut ortho) in query.iter_mut() {
+        let mut direction = Vec3::ZERO;
+
+        if keyboard_input.pressed(KeyCode::A) {
+            direction -= Vec3::new(1.0, 0.0, 0.0);
+        }
+
+        if keyboard_input.pressed(KeyCode::D) {
+            direction += Vec3::new(1.0, 0.0, 0.0);
+        }
+
+        if keyboard_input.pressed(KeyCode::W) {
+            direction += Vec3::new(0.0, 1.0, 0.0);
+        }
+
+        if keyboard_input.pressed(KeyCode::S) {
+            direction -= Vec3::new(0.0, 1.0, 0.0);
+        }
+
+        if keyboard_input.pressed(KeyCode::Z) {
+            ortho.scale += 0.1;
+        }
+
+        if keyboard_input.pressed(KeyCode::X) {
+            ortho.scale -= 0.1;
+        }
+
+        if ortho.scale < 0.5 {
+            ortho.scale = 0.5;
+        }
+
+        let z = transform.translation.z;
+        transform.translation += time.delta_seconds() * direction * 500.;
+        // Important! We need to restore the Z values when moving the camera around.
+        // Bevy has a specific camera setup and this can mess with how our layers are shown.
+        transform.translation.z = z;
+    }
+}
+
+// A system that moves the camera based on mouse motion
+pub fn camera_movement(
+    mut mouse_motion_events: EventReader<MouseMotion>,
+    mut query: Query<(&mut Transform, &OrthographicProjection), With<Camera>>,
+) {
+    // Get the primary window
+    // Iterate over mouse motion events
+    for event in mouse_motion_events.iter() {
+        // Get the delta movement of the mouse
+        let delta = event.delta;
+
+        // Iterate over camera entities
+        for (mut transform, ortho) in query.iter_mut() {
+            // Convert the delta movement to world coordinates
+            let delta_world = Vec3::new(delta.x, -delta.y, 0.0) * ortho.scale;
+
+            // Update the camera position
+            transform.translation += delta_world;
+        }
+    }
+}
+
+fn startup(mut commands: Commands, asset_server: Res<AssetServer>) {
+    commands.spawn(Camera2dBundle::default());
+
+    let texture_handle: Handle<Image> = asset_server.load("tiles.png");
+
+    let map_size = TilemapSize { x: 256, y: 256 };
+    let mut tile_storage = TileStorage::empty(map_size);
+    let tilemap_entity = commands.spawn_empty().id();
+
+    let mut i = 0;
+    for x in 0..map_size.x {
+        for y in 0..map_size.y {
+            let state = match rand::thread_rng().gen_bool(0.5) {
+                true => VegetationState::Green,
+                false => VegetationState::Empty,
+            };
+            let tile_pos = TilePos { x, y };
+            let tile_entity = commands
+                .spawn((
+                    TileBundle {
+                        position: tile_pos,
+                        tilemap_id: TilemapId(tilemap_entity),
+                        visible: TileVisible(true),
+                        ..Default::default()
+                    },
+                    FFMCellState { state },
+                ))
+                .id();
+            tile_storage.set(&tile_pos, tile_entity);
+            i += 1;
+        }
+    }
+
+    let tile_size = TilemapTileSize { x: 4.0, y: 4.0 };
+    let grid_size = tile_size.into();
+    let map_type = TilemapType::Square;
+
+    commands.entity(tilemap_entity).insert(
+        (TilemapBundle {
+            grid_size,
+            map_type,
+            size: map_size,
+            storage: tile_storage,
+            texture: TilemapTexture::Single(texture_handle),
+            tile_size,
+            transform: get_tilemap_center_transform(&map_size, &grid_size, &map_type, 0.0),
+            ..Default::default()
+        }),
+    );
+}
+
+fn update_graphics(mut query: Query<(Entity, &FFMCellState, &mut TileColor)>) {
+    for (entity, state, mut color) in query.iter_mut() {
+        // change tile color based on state
+        match state.state {
+            VegetationState::Green => {
+                color.0 = Color::GREEN;
+            }
+            VegetationState::Burning => {
+                color.0 = Color::RED;
+            }
+            VegetationState::Empty => {
+                color.0 = Color::BLACK;
+            }
+        }
+    }
+}
+
+fn update_burning(
+    mut query: Query<(Entity, &TilePos, &mut FFMCellState)>,
+    mut tile_storage_query: Query<(&TileStorage, &TilemapSize)>,
+) {
+    let (tile_storage, map_size) = tile_storage_query.single_mut();
+
+    // First Pass: Collect entities to update without mutating anything
+    let mut to_burn = Vec::new();
+    let mut to_green = Vec::new();
+    let mut to_empty = Vec::new();
+    for (entity, position, state) in query.iter() {
+        match state.state {
+            VegetationState::Green => {
+                let neighbor_count =
+                    Neighbors::get_square_neighboring_positions(position, map_size, true)
+                        .entities(tile_storage)
+                        .iter()
+                        .filter(|neighbor| {
+                            let neighbour_cell =
+                                query.get_component::<FFMCellState>(**neighbor).unwrap();
+                            neighbour_cell.state == VegetationState::Burning
+                        })
+                        .count();
+
+                if neighbor_count > 0 {
+                    to_burn.push(entity);
+                } else {
+                    if rand::thread_rng().gen_bool(0.001) {
+                        to_burn.push(entity);
+                    }
+                }
+            }
+            VegetationState::Burning => {
+                to_empty.push(entity);
+            }
+            VegetationState::Empty => {
+                if rand::thread_rng().gen_bool(0.01) {
+                    to_green.push(entity);
+                }
+            }
+        }
+    }
+
+    // Second Pass: Mutate states based on collected data
+    for entity in to_burn {
+        if let Ok((_entity, _position, mut state)) = query.get_mut(entity) {
+            state.state = VegetationState::Burning;
+        }
+    }
+
+    for entity in to_green {
+        if let Ok((_entity, _position, mut state)) = query.get_mut(entity) {
+            state.state = VegetationState::Green; // Assuming the transition is to Empty
+        }
+    }
+
+    for entity in to_empty {
+        if let Ok((_entity, _position, mut state)) = query.get_mut(entity) {
+            state.state = VegetationState::Empty;
         }
     }
 }
 
 fn main() {
     App::new()
-        .register_type::<FFMCellState>()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "Game Of Life".to_string(),
-                resolution: [1200.0, 800.0].into(),
-                ..default()
-            }),
-            ..default()
-        }))
-        .add_plugins(VegetationAutomataPlugin::default())
-        .init_resource::<Configuration>() // `ResourceInspectorPlugin` won't initialize the resource
-        .register_type::<Configuration>() // you need to register your type to display it
-        .add_plugins(ResourceInspectorPlugin::<Configuration>::default())
-        .insert_resource(SimulationBatch)
-        .add_systems(Startup, (setup_camera, setup_map))
-        .add_systems(Update, (toggle_simulation_pause_system,))
+        .add_plugins(
+            DefaultPlugins
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: String::from("Game of Life Example"),
+                        ..Default::default()
+                    }),
+                    ..default()
+                })
+                .set(ImagePlugin::default_nearest()),
+        )
+        .add_plugins(TilemapPlugin)
+        .add_systems(Startup, startup)
+        .add_systems(Update, movement)
+        // .add_systems(Update, camera_movement)
+        .add_systems(Update, update_graphics)
+        .add_systems(Update, update_burning)
         .run();
 }
